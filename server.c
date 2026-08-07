@@ -7,147 +7,10 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
-#define PORT 8080
-#define BUFFER_SIZE 1024
-#define USERNAME_SIZE 32
-#define PASSWORD_SIZE 32
-
-// ANSI Color Codes
-#define RESET   "\033[0m"
-#define RED     "\033[31m"
-#define GREEN   "\033[32m"
-#define YELLOW  "\033[33m"
-#define BLUE    "\033[34m"
-#define MAGENTA "\033[35m"
-#define CYAN    "\033[36m"
-
-#define MAX_CLIENTS 100
-
-// Authenticate user
-int authenticate(char *username, char *password)
-{
-    FILE *fp = fopen("users.txt", "r");
-
-    if (fp == NULL)
-    {
-        perror("users.txt");
-        return 0;
-    }
-
-    char line[100];
-
-    while (fgets(line, sizeof(line), fp))
-    {
-        char *u = strtok(line, ",");
-        char *p = strtok(NULL, ",");
-
-        if (u == NULL || p == NULL)
-            continue;
-
-        p[strcspn(p, "\n")] = '\0';
-
-        if (strcmp(username, u) == 0 &&
-            strcmp(password, p) == 0)
-        {
-            fclose(fp);
-            return 1;
-        }
-    }
-
-    fclose(fp);
-
-    return 0;
-}
-
-typedef struct
-{
-    int socket;
-    char username[USERNAME_SIZE];
-    pthread_t thread;
-} Client;
-
-Client *clients[MAX_CLIENTS];
-pthread_mutex_t clients_mutex = PTHREAD_MUTEX_INITIALIZER;
-
-void add_client(Client *client)
-{
-    pthread_mutex_lock(&clients_mutex);
-
-    for(int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if(clients[i] == NULL)
-        {
-            clients[i] = client;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&clients_mutex);
-}
-
-void remove_client(int socket)
-{
-    pthread_mutex_lock(&clients_mutex);
-
-    for(int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if(clients[i] != NULL &&
-           clients[i]->socket == socket)
-        {
-            free(clients[i]);
-            clients[i] = NULL;
-            break;
-        }
-    }
-
-    pthread_mutex_unlock(&clients_mutex);
-}
-
-void broadcast(char *message, int sender_socket)
-{
-    pthread_mutex_lock(&clients_mutex);
-
-    char sender_username[USERNAME_SIZE] = "Unknown";
-
-    for(int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if(clients[i] != NULL &&
-           clients[i]->socket == sender_socket)
-        {
-            strcpy(sender_username, clients[i]->username);
-            break;
-        }
-    }
-
-    char msg[BUFFER_SIZE + 100];
-
-    // Check if this is a system message (join/leave)
-    if (strstr(message, "joined the chat.") != NULL || 
-        strstr(message, "left the chat.") != NULL)
-    {
-        sprintf(msg, "SYS|%s\n", message);
-    }
-    else
-    {
-        sprintf(msg, "MSG|%s|%s\n", sender_username, message);
-    }
-
-    printf("%s", msg);
-
-    for(int i = 0; i < MAX_CLIENTS; i++)
-    {
-        if(clients[i] != NULL &&
-           clients[i]->socket != sender_socket)
-        {
-            send(clients[i]->socket,
-                 msg,
-                 strlen(msg),
-                 0);
-        }
-    }
-
-    pthread_mutex_unlock(&clients_mutex);
-}
+#include "utils.h"
+#include "auth.h"
+#include "rooms.h"
+#include "commands.h"
 
 void *client_handler(void *arg)
 {
@@ -173,18 +36,19 @@ void *client_handler(void *arg)
         // Check for exit command
         if (strcmp(buffer, "exit") == 0)
         {
-            printf(YELLOW "[INFO] %s requested disconnect.\n" RESET, client->username);
-
-            char msg[100];
-            sprintf(msg, "%s left the chat.", client->username);
-            broadcast(msg, client_socket);
-
-            remove_client(client_socket);
-            close(client_socket);
-            pthread_exit(NULL);
+            handle_command(client, "/exit");
+            continue;
         }
 
-        broadcast(buffer, client_socket);
+        // Check if command (starts with /)
+        if (buffer[0] == '/')
+        {
+            handle_command(client, buffer);
+        }
+        else
+        {
+            broadcast_room_message(client, buffer);
+        }
     }
 
     // Broadcast leave notification
@@ -241,6 +105,9 @@ int main()
     }
 
     printf(GREEN "Server listening on port %d...\n" RESET, PORT);
+
+    // Initialize rooms
+    init_rooms();
 
     while (1)
     {
@@ -323,6 +190,10 @@ int main()
         {
             printf(GREEN "Authentication successful for %s\n" RESET, client->username);
             send(client->socket, "LOGIN_OK", 8, 0);
+
+            // Initialize client room and authentication
+            strcpy(client->room, "Lobby");
+            client->authenticated = 1;
 
             add_client(client);
 

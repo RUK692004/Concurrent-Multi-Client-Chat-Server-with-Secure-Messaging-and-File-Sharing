@@ -48,7 +48,21 @@ void *receive_messages(void *arg)
         pthread_mutex_lock(&print_mutex);
 
         // Check message type
-        if (strncmp(buffer, "SYS|", 4) == 0)
+        if (strncmp(buffer, "PRV|", 4) == 0)
+        {
+            // Private message - parse sender and message
+            char *sender = buffer + 4;
+            char *msg_content = strchr(sender, '|');
+            if (msg_content != NULL)
+            {
+                *msg_content = '\0';
+                msg_content++; // Skip past '|'
+                // Remove trailing newline from message
+                msg_content[strlen(msg_content) - 1] = '\0';
+                printf("\r" MAGENTA "[Private] %s > %s" RESET "\n\n", sender, msg_content);
+            }
+        }
+        else if (strncmp(buffer, "SYS|", 4) == 0)
         {
             // System message (join/leave) - remove trailing newline
             buffer[bytes - 1] = '\0'; // Remove \n
